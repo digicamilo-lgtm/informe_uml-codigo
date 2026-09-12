@@ -1,0 +1,136 @@
+@startuml
+
+' =========================================================
+' DIAGRAMA DE CLASES - SISTEMA DE GESTIÓN EMPRESARIAL
+' =========================================================
+
+skinparam classAttributeIconSize 0
+skinparam monochrome true
+skinparam shadowing true
+
+' =========================================================
+' CLASE DEPARTAMENTO
+' =========================================================
+
+class Departamento {
+    -int id_dept
+    -String nombre_dept
+    -Empleado gerente
+
+    +agregar_empleado(Empleado e) : bool
+    +remover_empleado(Empleado e) : bool
+    +listar_empleados() : List<Empleado>
+}
+
+' =========================================================
+' CLASE ABSTRACTA USUARIO
+' =========================================================
+
+abstract class Usuario {
+    -int id
+    -String nombre
+    -String correo
+
+    +puede_acceder(String modulo) : bool
+}
+
+' =========================================================
+' CLASE EMPLEADO
+' =========================================================
+
+class Empleado {
+    -String direccion
+    -String telefono
+    -Decimal salario
+    -Date fecha_inicio
+    -int id_departamento
+
+    +get_salario() : Decimal
+    +set_salario(Decimal v) : bool
+    +registrar_horas() : RegistroTiempo
+    +obtener_proyectos() : List<Proyecto>
+}
+
+' =========================================================
+' CLASE ADMINISTRADOR
+' =========================================================
+
+class Administrador {
+
+    +crear_departamento() : Departamento
+    +generar_informe() : void
+}
+
+' =========================================================
+' CLASE REPORTE MANAGER
+' =========================================================
+
+class ReporteManager {
+    -int id_reporte
+    -String tipo
+    -Date fecha_generacion
+
+    +generar_reporte_empleado(Empleado emp) : String
+    +exportar_pdf(String contenido, String ruta) : bool
+    +exportar_excel(Object datos, String ruta) : bool
+}
+
+' =========================================================
+' CLASE PROYECTO
+' =========================================================
+
+class Proyecto {
+    -int id_proyecto
+    -String nombre
+    -String descripcion
+    -Date fecha_inicio
+    -String estado
+
+    +asignar_empleado(Empleado e) : bool
+    +remover_empleado(Empleado e) : bool
+    +calcular_total_horas() : Decimal
+}
+
+' =========================================================
+' CLASE REGISTRO TIEMPO
+' =========================================================
+
+class RegistroTiempo {
+    -int id_registro
+    -Date fecha
+    -Decimal horas
+    -String descripcion
+
+    +validar_limite_diario() : bool
+    +obtener_resumen() : String
+}
+
+' =========================================================
+' RELACIONES
+' =========================================================
+
+' Departamento agrega empleados
+Departamento "1" o-- "0..*" Empleado : Agregación
+
+' Empleado hereda de Usuario
+Empleado --|> Usuario : Hereda
+
+' Administrador hereda de Usuario
+Administrador --|> Usuario : Hereda
+
+' Empleado es asignado a proyectos
+Empleado "0..*" -- "0..*" Proyecto : Asignado
+
+' Empleado registra horas
+Empleado "1" -- "0..*" RegistroTiempo : Registra
+
+' Registro de tiempo pertenece a un proyecto
+Proyecto "1" -- "0..*" RegistroTiempo : Pertenece
+
+' ReporteManager depende de Empleado
+ReporteManager ..> Empleado
+
+' ReporteManager depende de Proyecto
+ReporteManager ..> Proyecto
+
+@enduml
