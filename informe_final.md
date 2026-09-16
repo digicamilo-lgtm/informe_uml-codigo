@@ -9,6 +9,7 @@ La solución se organizó en dos archivos principales:
 
 - `ecotech.py`: modelo de dominio, reglas de validación, persistencia SQLite y operaciones CRUD.
 - `interfaz.py`: interfaz gráfica de usuario desarrollada con Tkinter.
+- `interfaz_terminal.py`: interfaz interactiva de terminal para operar el mismo CRUD sin abrir una ventana.
 
 Esta separación permite que la lógica del sistema funcione independientemente de la interfaz visual y facilita las pruebas, el mantenimiento y futuras ampliaciones.
 
@@ -105,6 +106,11 @@ Está ubicada en `interfaz.py` e incluye:
 - Mensajes de error sin cerrar la aplicación.
 
 La interfaz utiliza las funciones públicas del backend y no duplica la lógica de persistencia.
+
+También se incluye `interfaz_terminal.py`, que ofrece menús de texto para listar, crear,
+actualizar y eliminar departamentos, empleados, proyectos y registros de horas. Recibe
+opcionalmente la ruta de la base de datos mediante `--db`, por lo que puede utilizarse
+desde cualquier terminal sin depender de Tkinter.
 
 ## 5. Base de datos SQLite
 
