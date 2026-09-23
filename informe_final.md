@@ -8,7 +8,6 @@ Este informe presenta la solución implementada para el sistema de gestión empr
 La solución se organizó en dos archivos principales:
 
 - `ecotech.py`: modelo de dominio, reglas de validación, persistencia SQLite y operaciones CRUD.
-- `interfaz.py`: interfaz gráfica de usuario desarrollada con Tkinter.
 - `interfaz_terminal.py`: interfaz interactiva de terminal para operar el mismo CRUD sin abrir una ventana.
 
 Esta separación permite que la lógica del sistema funcione independientemente de la interfaz visual y facilita las pruebas, el mantenimiento y futuras ampliaciones.
@@ -96,21 +95,18 @@ Está ubicada en `ecotech.py` e incluye:
 
 ### 4.2 Capa de presentación
 
-Está ubicada en `interfaz.py` e incluye:
+Está ubicada en `interfaz_terminal.py` e incluye:
 
-- Ventana principal de Tkinter.
-- Pestañas para cada grupo de información.
-- Formularios de entrada.
-- Tablas para visualizar los registros.
-- Botones para crear, consultar, actualizar y eliminar.
+- Inicio de sesión con usuario y contraseña.
+- Menús para crear, consultar, actualizar y eliminar departamentos, empleados, proyectos y registros de horas.
+- Gestión de asignaciones entre empleados y proyectos.
+- Menú de servicios externos para clima, indicadores económicos e historial local.
 - Mensajes de error sin cerrar la aplicación.
 
 La interfaz utiliza las funciones públicas del backend y no duplica la lógica de persistencia.
 
-También se incluye `interfaz_terminal.py`, que ofrece menús de texto para listar, crear,
-actualizar y eliminar departamentos, empleados, proyectos y registros de horas. Recibe
-opcionalmente la ruta de la base de datos mediante `--db`, por lo que puede utilizarse
-desde cualquier terminal sin depender de Tkinter.
+La interfaz recibe opcionalmente la ruta de la base de datos mediante `--db`, por lo que
+puede utilizarse desde cualquier terminal.
 
 ## 5. Base de datos SQLite
 
@@ -129,6 +125,8 @@ El esquema contiene las siguientes tablas:
 - `proyecto`
 - `registro_tiempo`
 - `empleado_proyecto`
+- `usuario_acceso`: almacena usuarios y hashes PBKDF2, nunca contraseñas planas.
+- `consulta_api`: almacena el historial de respuestas filtradas de los servicios externos.
 
 Las tablas utilizan claves primarias y foráneas para mantener la integridad de las relaciones. La tabla `empleado_proyecto` representa la asociación muchos a muchos entre empleados y proyectos.
 
@@ -164,7 +162,28 @@ Las tablas utilizan claves primarias y foráneas para mantener la integridad de 
 
 Cada operación utiliza consultas parametrizadas para evitar concatenar directamente los valores introducidos por el usuario.
 
-## 7. Manejo de errores y validaciones
+La relación muchos a muchos también se gestiona mediante `asignar_empleado_proyecto`,
+`desasignar_empleado_proyecto` y `consultar_asignaciones`. Estas funciones validan que
+las entidades existan, impiden duplicados y mantienen la integridad de la tabla intermedia.
+
+## 7. Consumo de servicios externos y seguridad
+
+La aplicación integra dos servicios externos mediante librerías estándar de Python:
+
+- **OpenWeather:** `consultar_clima` obtiene ciudad, temperatura en grados Celsius, humedad y descripción del clima.
+- **mindicador.cl:** `consultar_indicador` obtiene el nombre, unidad, valor y fecha del indicador solicitado, por ejemplo `dolar`.
+
+La clave de OpenWeather no está escrita en el código. Se obtiene desde la variable de entorno
+`ECOTECH_OPENWEATHER_API_KEY`. Las entradas de ciudad e indicador se validan antes de generar
+la solicitud y las respuestas se reducen a los campos necesarios antes de guardarse en
+`consulta_api`. No se almacenan claves ni contraseñas en el historial.
+
+La autenticación local utiliza `hashlib.pbkdf2_hmac` con SHA-256, salt aleatorio y 120.000
+iteraciones. La comprobación usa `hmac.compare_digest`, evitando comparar contraseñas en texto
+plano. Los errores HTTP, timeout, conexión y respuestas incompletas se convierten en mensajes
+seguros que no exponen claves ni trazas técnicas al usuario.
+
+## 8. Manejo de errores y validaciones
 
 La aplicación controla errores mediante excepciones específicas:
 
@@ -185,28 +204,32 @@ También se validan las siguientes reglas:
 - Las fechas deben tener formato `AAAA-MM-DD`.
 - Las entidades relacionadas deben existir antes de crear un registro de tiempo.
 
-## 8. Uso de la interfaz
+## 9. Uso de la interfaz
 
 Desde PowerShell, ubicándose en la carpeta del proyecto, se ejecuta:
 
 ```powershell
-py interfaz.py
+py interfaz_terminal.py
 ```
 
-La ventana muestra cuatro pestañas:
+El menú muestra cinco módulos:
 
 1. **Departamentos**: permite crear, actualizar y eliminar departamentos.
 2. **Empleados**: permite registrar empleados, actualizar salarios y eliminarlos.
 3. **Proyectos**: permite crear proyectos, actualizar su estado y eliminarlos.
 4. **Registro de horas**: permite registrar horas, actualizarlas y eliminarlas.
+5. **Servicios externos**: permite consultar clima, indicadores económicos e historial local.
+
+Dentro de **Proyectos** también están disponibles las opciones para asignar, desasignar y
+listar empleados asociados.
 
 La base de datos se guarda en `ecotech.db` en la misma carpeta del proyecto.
 
-## 9. Pruebas realizadas
+## 10. Pruebas realizadas
 
 Se realizaron las siguientes comprobaciones:
 
-- Compilación de `ecotech.py` e `interfaz.py` mediante `py_compile`.
+- Compilación de `ecotech.py` e `interfaz_terminal.py` mediante `py_compile`.
 - Importación correcta del módulo de interfaz.
 - Ejecución de la demostración CRUD incluida en `ecotech.py`.
 - Creación, consulta, actualización y eliminación de empleados.
@@ -216,6 +239,11 @@ Se realizaron las siguientes comprobaciones:
 - Confirmación de que `Usuario` es una clase abstracta.
 - Confirmación del límite máximo de 24 horas diarias.
 - Revisión del editor sin errores detectados en ambos archivos.
+- Autenticación correcta e incorrecta con contraseñas almacenadas como hash.
+- Consulta real a OpenWeather para Santiago.
+- Consulta real a mindicador.cl para el dólar observado.
+- Persistencia y lectura del historial de respuestas de APIs.
+- Asignación, consulta y desasignación de empleados en proyectos.
 
 La demostración final mostró el mensaje:
 
@@ -223,7 +251,7 @@ La demostración final mostró el mensaje:
 Demostracion CRUD completada correctamente.
 ```
 
-## 10. Cumplimiento de los criterios de evaluación
+## 11. Cumplimiento de los criterios de evaluación
 
 | Criterio | Evidencia de cumplimiento |
 |---|---|
@@ -237,8 +265,12 @@ Demostracion CRUD completada correctamente.
 | 2.1.4.I.8 | Los docstrings y el informe explican qué errores se controlan y cómo se protegen los datos. |
 | 2.1.5.G.9 | La solución está dividida en backend e interfaz, con nombres consistentes y funciones fáciles de probar. |
 | 2.1.5.I.10 | Al final de `ecotech.py` se incluye `# NOTAS PARA EVALUACIÓN CRÍTICA DE IA`. |
+| 3.1.1 | `consultar_clima` y `consultar_indicador` consumen OpenWeather y mindicador.cl, procesan JSON y seleccionan datos relevantes. |
+| 3.1.2 | La clave se obtiene por variable de entorno, las contraseñas usan PBKDF2 y las entradas se validan antes de consultar. |
+| 3.1.3 | Los errores HTTP, timeout, conexión, JSON y respuestas incompletas se controlan sin interrumpir la interfaz ni revelar secretos. |
+| 3.1.4 | La solución fue revisada con apoyo de IA: se descartó guardar claves en el código, se agregó hash de contraseñas, validación de entradas y mensajes de error seguros. |
 
-## 11. Evaluación crítica y aspectos pendientes
+## 12. Evaluación crítica y aspectos pendientes
 
 El informe técnico original identificó dos aspectos que requerían revisión manual:
 
@@ -253,13 +285,13 @@ También conviene revisar en una siguiente versión:
 - Validación completa de correos y teléfonos.
 - Uso de librerías reales para exportar PDF y Excel.
 - Pruebas automatizadas con `unittest` o `pytest`.
-- Separación adicional en módulos como `modelos.py`, `base_datos.py` e `interfaz.py` si el proyecto crece.
+- Separación adicional en módulos como `modelos.py`, `base_datos.py` e `interfaz_terminal.py` si el proyecto crece.
 - Copias de seguridad y migraciones para una base de datos de producción.
 
-## 12. Conclusión
+## 13. Conclusión
 
-La solución implementa el sistema EcoTech Solutions siguiendo el modelo UML entregado y agrega los elementos necesarios para convertirlo en una aplicación funcional: persistencia SQLite, operaciones CRUD, validaciones, manejo de excepciones e interfaz gráfica interactiva.
+La solución implementa el sistema EcoTech Solutions siguiendo el modelo UML entregado y agrega los elementos necesarios para convertirlo en una aplicación funcional: persistencia SQLite, operaciones CRUD, asignaciones entre empleados y proyectos, validaciones, manejo de excepciones, autenticación, consumo de APIs e interfaz de terminal interactiva.
 
-La separación entre `ecotech.py` e `interfaz.py` resuelve el problema de interacción con el usuario sin mezclar la presentación con la lógica del sistema. El backend puede probarse de forma independiente y la interfaz permite operar los datos mediante formularios y tablas.
+La separación entre `ecotech.py` e `interfaz_terminal.py` resuelve el problema de interacción con el usuario sin mezclar la presentación con la lógica del sistema. El backend puede probarse de forma independiente y la interfaz permite operar los datos mediante menús.
 
-La implementación cumple los 10 criterios solicitados y deja identificadas las decisiones que deben ser revisadas manualmente como parte de la evaluación crítica del uso de herramientas de IA.
+La implementación cubre los criterios de las Unidades 2 y 3. Las decisiones de seguridad, consumo de APIs, persistencia local y validación del código apoyado por IA quedan documentadas para la defensa argumentativa.

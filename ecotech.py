@@ -15,9 +15,175 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from datetime import date
 from decimal import Decimal, InvalidOperation
+import hashlib
+import hmac
+import json
+import os
 from pathlib import Path
+import re
 import sqlite3
 from typing import Any, Iterable, Optional
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+
+
+OPENWEATHER_API_KEY_ENV = "ECOTECH_OPENWEATHER_API_KEY"
+OPENWEATHER_URL = "https://api.openweathermap.org/data/2.5/weather"
+MINDICADOR_URL = "https://mindicador.cl/api"
+_CONSULTA_REGEX = re.compile(r"^[\w\s,.'-]{2,80}$", re.UNICODE)
+
+
+class ServicioExternoError(RuntimeError):
+    """Error seguro y legible para fallos de servicios externos."""
+
+
+def _validar_consulta(valor: str, nombre: str) -> str:
+    """Valida entradas antes de enviarlas a un servicio externo."""
+    valor_limpio = valor.strip()
+    if not _CONSULTA_REGEX.fullmatch(valor_limpio):
+        raise ValueError(f"{nombre} contiene caracteres no permitidos o es demasiado largo.")
+    return valor_limpio
+
+
+def _solicitar_json(url: str, parametros: dict[str, str], timeout: int = 10) -> dict[str, Any]:
+    """Realiza una solicitud JSON sin mostrar URL, claves ni detalles internos."""
+    try:
+        consulta = urlencode(parametros)
+        solicitud = Request(f"{url}?{consulta}", headers={"Accept": "application/json"})
+        with urlopen(solicitud, timeout=timeout) as respuesta:
+            datos = json.load(respuesta)
+        if not isinstance(datos, dict):
+            raise ServicioExternoError("El servicio devolvio una respuesta inesperada.")
+        return datos
+    except HTTPError as error:
+        if error.code in {401, 403}:
+            raise ServicioExternoError("El servicio rechazo la autenticacion.") from error
+        if error.code == 404:
+            raise ServicioExternoError("No se encontraron datos para la consulta.") from error
+        raise ServicioExternoError("El servicio externo no esta disponible.") from error
+    except (URLError, TimeoutError, json.JSONDecodeError, OSError) as error:
+        raise ServicioExternoError("No fue posible conectar con el servicio externo.") from error
+
+
+def consultar_clima(ciudad: str, api_key: str | None = None) -> dict[str, Any]:
+    """Obtiene clima actual de OpenWeather y devuelve solo datos necesarios."""
+    ciudad_valida = _validar_consulta(ciudad, "La ciudad")
+    clave = api_key or os.getenv(OPENWEATHER_API_KEY_ENV)
+    if not clave:
+        raise ServicioExternoError(
+            f"Configura la variable de entorno {OPENWEATHER_API_KEY_ENV}."
+        )
+    datos = _solicitar_json(
+        OPENWEATHER_URL,
+        {"q": ciudad_valida, "appid": clave, "units": "metric", "lang": "es"},
+    )
+    try:
+        return {
+            "ciudad": datos["name"],
+            "temperatura_c": datos["main"]["temp"],
+            "humedad_porcentaje": datos["main"]["humidity"],
+            "estado": datos["weather"][0]["description"],
+        }
+    except (KeyError, IndexError, TypeError) as error:
+        raise ServicioExternoError("El servicio de clima devolvio datos incompletos.") from error
+
+
+def consultar_indicador(indicador: str = "dolar", fecha: str | None = None) -> dict[str, Any]:
+    """Obtiene un indicador de mindicador.cl y devuelve sus campos relevantes."""
+    indicador_valido = _validar_consulta(indicador, "El indicador").lower()
+    if fecha is not None:
+        try:
+            fecha_valida = date.fromisoformat(fecha).strftime("%d-%m-%Y")
+        except ValueError as error:
+            raise ValueError("La fecha debe tener formato AAAA-MM-DD.") from error
+        url = f"{MINDICADOR_URL}/{indicador_valido}/{fecha_valida}"
+    else:
+        url = f"{MINDICADOR_URL}/{indicador_valido}"
+    datos = _solicitar_json(url, {})
+    try:
+        serie = datos["serie"]
+        if not serie:
+            raise ServicioExternoError("El servicio economico no devolvio valores.")
+        valor_actual = serie[0]
+        return {
+            "indicador": datos["nombre"],
+            "unidad": datos["unidad_medida"],
+            "valor": valor_actual["valor"],
+            "fecha": valor_actual["fecha"],
+        }
+    except (KeyError, IndexError, TypeError) as error:
+        raise ServicioExternoError("El servicio economico devolvio datos incompletos.") from error
+
+
+def guardar_consulta_api(
+    conexion: sqlite3.Connection, servicio: str, consulta: str, respuesta: dict[str, Any]
+) -> bool:
+    """Persiste una respuesta JSON filtrada, sin almacenar credenciales."""
+    if not servicio.strip() or not consulta.strip():
+        raise ValueError("El servicio y la consulta son obligatorios.")
+    try:
+        conexion.execute(
+            "INSERT INTO consulta_api(servicio, consulta, respuesta_json, fecha) VALUES (?, ?, ?, ?)",
+            (
+                servicio.strip(),
+                consulta.strip(),
+                json.dumps(respuesta, ensure_ascii=True),
+                date.today().isoformat(),
+            ),
+        )
+        conexion.commit()
+        return True
+    except sqlite3.Error:
+        conexion.rollback()
+        raise
+
+
+def listar_consultas_api(conexion: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Consulta el historial local de respuestas de APIs."""
+    return list(conexion.execute("SELECT * FROM consulta_api ORDER BY id DESC"))
+
+
+def _hash_password(password: str, salt: bytes | None = None) -> str:
+    """Genera un hash PBKDF2 con salt para no almacenar contrasenas planas."""
+    if len(password) < 8:
+        raise ValueError("La contrasena debe tener al menos 8 caracteres.")
+    salt = salt or os.urandom(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 120_000)
+    return f"{salt.hex()}${digest.hex()}"
+
+
+def crear_usuario(conexion: sqlite3.Connection, nombre: str, password: str) -> bool:
+    """Crea un usuario autenticable usando hash y salt."""
+    nombre_valido = _validar_consulta(nombre, "El usuario")
+    try:
+        conexion.execute(
+            "INSERT INTO usuario_acceso(nombre, password_hash) VALUES (?, ?)",
+            (nombre_valido, _hash_password(password)),
+        )
+        conexion.commit()
+        return True
+    except sqlite3.IntegrityError as error:
+        conexion.rollback()
+        raise ValueError("Ese usuario ya existe.") from error
+    except sqlite3.Error:
+        conexion.rollback()
+        raise
+
+
+def autenticar_usuario(conexion: sqlite3.Connection, nombre: str, password: str) -> bool:
+    """Verifica credenciales sin revelar si fallo el usuario o la contrasena."""
+    fila = conexion.execute(
+        "SELECT password_hash FROM usuario_acceso WHERE nombre = ?", (nombre.strip(),)
+    ).fetchone()
+    if fila is None or "$" not in fila["password_hash"]:
+        return False
+    salt_hex, digest_hex = fila["password_hash"].split("$", 1)
+    try:
+        calculado = _hash_password(password, bytes.fromhex(salt_hex)).split("$", 1)[1]
+    except (ValueError, TypeError):
+        return False
+    return hmac.compare_digest(calculado, digest_hex)
 
 
 def _decimal_positivo(valor: Decimal | int | float | str) -> Decimal:
@@ -378,6 +544,18 @@ def inicializar_bd(ruta: str | Path = ":memory:") -> sqlite3.Connection:
                 proyecto_id INTEGER NOT NULL REFERENCES proyecto(id_proyecto) ON DELETE CASCADE,
                 PRIMARY KEY (empleado_id, proyecto_id)
             );
+            CREATE TABLE IF NOT EXISTS usuario_acceso (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nombre TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS consulta_api (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                servicio TEXT NOT NULL,
+                consulta TEXT NOT NULL,
+                respuesta_json TEXT NOT NULL,
+                fecha TEXT NOT NULL
+            );
             """
         )
         conexion.commit()
@@ -572,6 +750,64 @@ def eliminar_proyecto(conexion: sqlite3.Connection, id_proyecto: int) -> bool:
     except sqlite3.Error:
         conexion.rollback()
         raise
+
+
+def asignar_empleado_proyecto(
+    conexion: sqlite3.Connection, empleado_id: int, proyecto_id: int
+) -> bool:
+    """Persiste la asociacion muchos a muchos entre empleado y proyecto."""
+    try:
+        empleado = conexion.execute(
+            "SELECT 1 FROM empleado WHERE id = ?", (empleado_id,)
+        ).fetchone()
+        proyecto = conexion.execute(
+            "SELECT 1 FROM proyecto WHERE id_proyecto = ?", (proyecto_id,)
+        ).fetchone()
+        if empleado is None or proyecto is None:
+            raise ValueError("El empleado y el proyecto deben existir.")
+        conexion.execute(
+            "INSERT INTO empleado_proyecto(empleado_id, proyecto_id) VALUES (?, ?)",
+            (empleado_id, proyecto_id),
+        )
+        conexion.commit()
+        return True
+    except sqlite3.IntegrityError as error:
+        conexion.rollback()
+        raise ValueError("El empleado ya esta asignado a ese proyecto.") from error
+    except sqlite3.Error:
+        conexion.rollback()
+        raise
+
+
+def desasignar_empleado_proyecto(
+    conexion: sqlite3.Connection, empleado_id: int, proyecto_id: int
+) -> bool:
+    """Elimina una asociacion empleado-proyecto sin eliminar entidades."""
+    try:
+        cursor = conexion.execute(
+            "DELETE FROM empleado_proyecto WHERE empleado_id = ? AND proyecto_id = ?",
+            (empleado_id, proyecto_id),
+        )
+        conexion.commit()
+        if cursor.rowcount == 0:
+            raise ValueError("La asignacion no existe.")
+        return True
+    except sqlite3.Error:
+        conexion.rollback()
+        raise
+
+
+def consultar_asignaciones(conexion: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Devuelve las asignaciones con nombres legibles."""
+    return list(conexion.execute("""
+        SELECT ep.empleado_id, u.nombre AS empleado,
+               ep.proyecto_id, p.nombre AS proyecto
+        FROM empleado_proyecto ep
+        JOIN empleado e ON e.id = ep.empleado_id
+        JOIN usuario u ON u.id = e.id
+        JOIN proyecto p ON p.id_proyecto = ep.proyecto_id
+        ORDER BY ep.empleado_id, ep.proyecto_id
+    """))
 
 
 def crear_registro_tiempo(conexion: sqlite3.Connection, registro: RegistroTiempo) -> bool:

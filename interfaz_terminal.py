@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from datetime import date
 from decimal import Decimal, InvalidOperation
+import getpass
 import sqlite3
 from typing import Callable
 
@@ -21,6 +22,9 @@ class InterfazTerminal:
         """Muestra el menu principal hasta que el usuario decide salir."""
         print("\nEcoTech Solutions - Interfaz de terminal")
         print(f"Base de datos: {self.conexion.execute('PRAGMA database_list').fetchone()[2]}")
+        if not self._autenticar():
+            print("No fue posible autenticar la sesion.")
+            return
         while True:
             self._mostrar_menu(
                 "MENU PRINCIPAL",
@@ -29,6 +33,7 @@ class InterfazTerminal:
                     ("2", "Empleados"),
                     ("3", "Proyectos"),
                     ("4", "Registros de horas"),
+                    ("5", "Servicios externos"),
                     ("0", "Salir"),
                 ],
             )
@@ -41,8 +46,67 @@ class InterfazTerminal:
                 "2": self._menu_empleados,
                 "3": self._menu_proyectos,
                 "4": self._menu_registros,
+                "5": self._menu_servicios_externos,
             }
             self._ejecutar_opcion(acciones.get(opcion), "Opcion no valida.")
+
+    def _autenticar(self) -> bool:
+        """Solicita credenciales y permite crear el primer usuario local."""
+        cantidad = self.conexion.execute("SELECT COUNT(*) FROM usuario_acceso").fetchone()[0]
+        if cantidad == 0:
+            print("No hay usuarios. Crea el primer usuario administrador.")
+            nombre = self._pedir_obligatorio("Usuario: ")
+            password = getpass.getpass("Contrasena (minimo 8 caracteres): ")
+            confirmacion = getpass.getpass("Repite la contrasena: ")
+            if password != confirmacion:
+                print("Error: las contrasenas no coinciden.")
+                return False
+            ecotech.crear_usuario(self.conexion, nombre, password)
+            print("Usuario creado. Sesion iniciada.")
+            return True
+        nombre = self._pedir_obligatorio("Usuario: ")
+        password = getpass.getpass("Contrasena: ")
+        if ecotech.autenticar_usuario(self.conexion, nombre, password):
+            return True
+        print("Credenciales invalidas.")
+        return False
+
+    def _menu_servicios_externos(self) -> None:
+        """Permite consultar clima e indicadores y guardar sus respuestas."""
+        self._mostrar_menu(
+            "SERVICIOS EXTERNOS",
+            [("1", "Clima actual"), ("2", "Indicador economico"), ("3", "Historial local"), ("0", "Volver")],
+        )
+        opcion = self._pedir("Selecciona una opcion: ")
+        acciones = {"1": self._consultar_clima, "2": self._consultar_indicador, "3": self._listar_consultas_api}
+        if opcion == "0":
+            return
+        self._ejecutar_opcion(acciones.get(opcion), "Opcion no valida.")
+
+    def _consultar_clima(self) -> None:
+        ciudad = self._pedir_obligatorio("Ciudad: ")
+        resultado = ecotech.consultar_clima(ciudad)
+        ecotech.guardar_consulta_api(self.conexion, "OpenWeather Ecotech", ciudad, resultado)
+        print(
+            f"{resultado['ciudad']}: {resultado['temperatura_c']} C, "
+            f"{resultado['estado']}, humedad {resultado['humedad_porcentaje']}%."
+        )
+
+    def _consultar_indicador(self) -> None:
+        indicador = self._pedir_obligatorio("Indicador (ejemplo: dolar): ")
+        fecha = self._pedir("Fecha AAAA-MM-DD (Enter=hoy): ") or None
+        resultado = ecotech.consultar_indicador(indicador, fecha)
+        ecotech.guardar_consulta_api(self.conexion, "mindicador.cl", indicador, resultado)
+        print(
+            f"{resultado['indicador']}: {resultado['valor']} {resultado['unidad']} "
+            f"({resultado['fecha']})."
+        )
+
+    def _listar_consultas_api(self) -> None:
+        self._imprimir_filas(
+            ecotech.listar_consultas_api(self.conexion),
+            ["id", "servicio", "consulta", "respuesta_json", "fecha"],
+        )
 
     def _menu_departamentos(self) -> None:
         self._menu_crud(
@@ -74,7 +138,11 @@ class InterfazTerminal:
                 "2": self._crear_proyecto,
                 "3": self._actualizar_proyecto,
                 "4": self._eliminar_proyecto,
+                "5": self._asignar_empleado,
+                "6": self._desasignar_empleado,
+                "7": self._listar_asignaciones,
             },
+            [("5", "Asignar empleado"), ("6", "Desasignar empleado"), ("7", "Listar asignaciones")],
         )
 
     def _menu_registros(self) -> None:
@@ -93,11 +161,15 @@ class InterfazTerminal:
         titulo: str,
         listar: Callable[[], None],
         acciones: dict[str, Callable[[], None]],
+        opciones_extra: list[tuple[str, str]] | None = None,
     ) -> None:
         while True:
+            opciones = [("1", "Listar"), ("2", "Crear"), ("3", "Actualizar"), ("4", "Eliminar")]
+            opciones.extend(opciones_extra or [])
+            opciones.append(("0", "Volver"))
             self._mostrar_menu(
                 titulo,
-                [("1", "Listar"), ("2", "Crear"), ("3", "Actualizar"), ("4", "Eliminar"), ("0", "Volver")],
+                opciones,
             )
             opcion = self._pedir("Selecciona una opcion: ")
             if opcion == "0":
@@ -195,6 +267,24 @@ class InterfazTerminal:
         proyecto_id = self._pedir_entero("ID del proyecto: ")
         ecotech.eliminar_proyecto(self.conexion, proyecto_id)
         print("Proyecto eliminado.")
+
+    def _asignar_empleado(self) -> None:
+        empleado_id = self._pedir_entero("ID del empleado: ")
+        proyecto_id = self._pedir_entero("ID del proyecto: ")
+        ecotech.asignar_empleado_proyecto(self.conexion, empleado_id, proyecto_id)
+        print("Empleado asignado al proyecto.")
+
+    def _desasignar_empleado(self) -> None:
+        empleado_id = self._pedir_entero("ID del empleado: ")
+        proyecto_id = self._pedir_entero("ID del proyecto: ")
+        ecotech.desasignar_empleado_proyecto(self.conexion, empleado_id, proyecto_id)
+        print("Empleado desasignado del proyecto.")
+
+    def _listar_asignaciones(self) -> None:
+        self._imprimir_filas(
+            ecotech.consultar_asignaciones(self.conexion),
+            ["empleado_id", "empleado", "proyecto_id", "proyecto"],
+        )
 
     def _crear_registro(self) -> None:
         empleado_id = self._pedir_entero("ID del empleado: ")
@@ -448,7 +538,7 @@ class InterfazTerminal:
     def _ejecutar_accion(accion: Callable[[], None]) -> None:
         try:
             accion()
-        except (ValueError, sqlite3.Error) as error:
+        except (ValueError, sqlite3.Error, ecotech.ServicioExternoError) as error:
             print(f"Error: {error}")
 
     @staticmethod
